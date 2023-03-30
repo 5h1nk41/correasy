@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import logging
 
 from dateutil.parser import parse
 
@@ -10,34 +11,31 @@ def load_data(file):
     try:
         df = pd.read_csv(file)
 
-        # 日付が含まれるカラム名を特定
-        date_column = None
-        for col in df.columns:
-            if "date" in col.lower() or "updated_at" in col.lower():
-                date_column = col
-                break
+        # Identify column names containing dates
+        date_column = df.select_dtypes(include=[np.datetime64]).columns[0] if not df.select_dtypes(include=[np.datetime64]).empty else None
 
         if date_column:
             df[date_column] = pd.to_datetime(df[date_column], format="%Y年%m月", errors='coerce')
 
         return df, date_column
-    except:
+    except Exception as e:
+        logging.error(f"Error loading data: {e}")
         return None, None
 
 
 def plot_scatter(filtered_df, x_axis, y_axis):
     fig, ax = plt.subplots()
-    sns.regplot(  # regplotを使用して回帰直線を描画
+    sns.regplot( 
         data=filtered_df,
         x=x_axis,
         y=y_axis,
         ax=ax,
-        scatter_kws={"s": 50, "alpha": 0.7},  # 点のサイズと透明度を調整
-        line_kws={"color": "blue", "alpha": 0.7},  # 回帰直線の色と透明度を調整
+        scatter_kws={"s": 50, "alpha": 0.7},  
+        line_kws={"color": "blue", "alpha": 0.7},  
     )
-    ax.set_xlabel(x_axis, fontsize=12)
-    ax.set_ylabel(y_axis, fontsize=12)
-    ax.grid(True, linestyle="--", alpha=0.5)  # グリッド線を追加
+    ax.set_xlabel(x_axis, fontsize=14)
+    ax.set_ylabel(y_axis, fontsize=14)
+    ax.grid(True, linestyle="--", alpha=0.5)
     return fig
 
 
@@ -60,53 +58,99 @@ def analyze_correlation(correlation_coefficient):
         return "強い負の相関があります"
     else:
         return "非常に強い負の相関があります"
+    
+def is_outlier(s):
+    lower_limit = s.quantile(0.25) - 1.5 * (s.quantile(0.75) - s.quantile(0.25))
+    upper_limit = s.quantile(0.75) + 1.5 * (s.quantile(0.75) - s.quantile(0.25))
+    return ~s.between(lower_limit, upper_limit)
+
+def highlight_outliers(val, is_outlier_col):
+    if is_outlier_col:
+        if val:
+            return 'background-color: yellow'
+    return ''
 
 def main():
     st.title("CorrEasy")
 
-    # CSVファイルのアップロード
-    st.subheader("CSVファイルをアップロード")
-    file = st.file_uploader("ファイルを選択", type="csv")
+    # Upload CSV file.
+    st.subheader("Upload CSV file")
+    file = st.file_uploader("Select file", type="csv")
+
+    filtered_df = None
 
     if file:
         df, date_column = load_data(file)
 
         if df is None:
-            st.warning("データの読み込みに失敗しました。日付形式を確認してください。")
+            st.warning("Failed to load data. Check date format.")
             return
+        else:
+            filtered_df = df
+        
+    if filtered_df is not None:
 
-        # 期間の選択
+        # Display table
+        st.subheader("Data-set")
+
+        styled_df = filtered_df.copy()
+        numeric_columns = styled_df.select_dtypes(include=[np.number]).columns
+        for col in numeric_columns:
+            styled_df[f'{col}_is_outlier'] = is_outlier(styled_df[col])
+
+
+        def style_func(val, is_outlier):
+            if is_outlier:
+                return highlight_outliers(val, True)
+            else:
+                return highlight_outliers(val, False)
+
+        for col in numeric_columns:
+            styled_df.style.applymap(
+                lambda val: style_func(val, styled_df[f"{col}_is_outlier"]),
+                subset=col,
+            )
+
+        # Remove is_outlier columns
+        styled_df = styled_df[numeric_columns]
+        
+        st.table(styled_df)
+
+        # Choice of period
         if date_column:
             min_date = df[date_column].min().date()
             max_date = df[date_column].max().date()
-            date_range = st.slider("期間を選択", min_date, max_date, (min_date, max_date))
+            date_range = st.slider("Select a period of time", min_date, max_date, (min_date, max_date))
 
             # 選択された期間のデータフィルタ
             filtered_df = df[(df[date_column].dt.date >= date_range[0]) & (df[date_column].dt.date <= date_range[1])]
         else:
             filtered_df = df
 
-        # 相関分析
-        st.subheader("データセットの設定")
+        # correlation analysis
+        st.subheader("Data set configuration")
 
-        available_columns = [col for col in df.columns if col != date_column]
-        x_axis = st.selectbox("X軸データセットを選択", available_columns)
-        y_axis = st.selectbox("Y軸データセットを選択", available_columns)
+        available_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+        if date_column in available_columns:
+            available_columns.remove(date_column)
 
-        # 散布図の描写
-        st.subheader("散布図")
+        x_axis = st.selectbox("Select X-axis data set", available_columns, index=0)
+        y_axis = st.selectbox("Select Y-axis data set", available_columns, index=1 if len(available_columns) > 1 else 0)
+
+        # Scatterplot depiction
+        st.subheader("scatter diagram")
 
         fig = plot_scatter(filtered_df, x_axis, y_axis)
         st.pyplot(fig)
 
-        # 相関係数の計算
-        st.subheader("相関係数")
+        # Calculation of correlation coefficients
+        st.subheader("correlation coefficient")
 
         correlation_coefficient = filtered_df[x_axis].corr(filtered_df[y_axis])
         st.write(f"{correlation_coefficient:.2f}")
 
-        # 分析結果の表示
-        st.subheader("分析結果")
+        # Display of analysis results
+        st.subheader("Analysis Results")
 
         result = analyze_correlation(correlation_coefficient)
         st.write(result)
